@@ -1,0 +1,14 @@
+{
+  "format_version": 1,
+  "fallback_language": "EN",
+  "languages": {
+    "EN": {
+      "Upgrades": {
+        "65341": "Drift Tire Compound",
+        "65342": "A tire made for sliding. It grips like a street tire, but keeps most of that grip at big angles and under wheelspin, so the car holds a drift instead of snapping.",
+        "65343": "Drift Springs and Dampers",
+        "65344": "Race springs and dampers set up for drifting: more caster and front camber, softer springs available and a lower ride height. Everything can be tuned afterwards."
+      }
+    }
+  }
+}
