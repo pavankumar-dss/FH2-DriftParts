@@ -2,7 +2,7 @@
   "format_version": 1,
   "id": "drift-parts",
   "name": "Drift Parts",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Adds a Drift tire compound, Drift springs and dampers and a Drift Angle Kit to every car's Upgrade Shop.",
   "database": "database.json",
   "media": null,

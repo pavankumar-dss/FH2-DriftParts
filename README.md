@@ -2,7 +2,7 @@
 
 A **Drift tire compound**, **Drift springs and dampers** and a **Drift Angle Kit** for every car in **Forza Horizon 2 on PC (Azimuth)**, bought in the Upgrade Shop like any other part. It's an [Extra Options](https://github.com/RokkuDayo/ForzaHorizon2_ExtraOptions) plugin, it works on modded cars too, and it was made to go with [Drift Zones](https://github.com/Philipp55112/fh2-drift-zones).
 
-**This is an early build (0.2.0).** It works and has been driven, but the feel is one person's first pass. Every number is in an ini file, so you can change it.
+**This is an early build (0.2.1).** It works and has been driven, but the feel is one person's first pass. Every number is in an ini file, so you can change it.
 
 ## What it adds
 
@@ -47,7 +47,7 @@ These are suggestions, not tested settings. If you find numbers you like, an iss
 ## Install
 
 1. Close the game.
-2. Download `DriftParts-0.2.0.zip` from **Releases** and drag the `mods` folder inside it onto your Azimuth folder (the one with `azimuth.exe`). You get:
+2. Download `DriftParts-0.2.1.zip` from **Releases** and drag the `mods` folder inside it onto your Azimuth folder (the one with `azimuth.exe`). You get:
 
    ```
    mods\Forza Horizon 2\Drift Parts\mod.json
@@ -70,7 +70,8 @@ Updating from 0.1.0: copy the new files over the old ones. 0.1.0's `[SteeringTes
 - **Camber and caster:** the drift suspension is built with caster 7 and camber -3 front, -1 rear, but the Tune page keeps showing your car's own alignment after you fit it. Set the alignment you want on the Tune page.
 - **The Drift Angle Kit's lock is set on the car you're driving.** The game keeps steering angle per car, not per part, so the plugin raises it on the car Extra Options says you're driving, each time that car is built with the kit. AI cars with the kit (there shouldn't be any) keep their own lock.
 - **The Steering lock slider** only shows on a car with the Drift Angle Kit fitted. Per-car values are kept in `plugins\DriftParts.locks.ini`.
-- **The wheels on screen don't look turned further.** The extra lock is in the car's physics (at full lock on keys the front wheels go from about 30° to 50°, and the car holds bigger angles), but the steering animation you see doesn't follow it yet.
+- **Where you'll see the extra lock.** The front wheels on screen do turn further with the kit: in a slow full-lock turn or a donut they stick right out past the bodywork at 80°, where at 30° they barely show. On a controller or keys the game trims lock at higher speeds for every car. Measured on a BMW M3 driven on keys with the kit at 80°: the front wheels reached about 60° up to 80 km/h, about 44° at 80–100 km/h and about 23° above 100 km/h. The stock car never passed 29°.
+- **More lock isn't always more angle.** On that M3 the driver didn't feel a big difference with or without the kit, even though the wheels turned twice as far. How much it helps seems to depend on the car (and on the tires and suspension holding the slide).
 - **Other mods:** it adds rows to the game's database and patches no game code. For the Steering lock row it adds a named property to the Tuning screen and chains onto Extra Options' own screen-loading hook, the way Enhanced Tuning does; the two work side by side (tested with Enhanced Tuning installed). Its parts are numbered the game's own way (car × 1000 + n), which matters with the CommunityGarage mod: that one builds a car carrying a part numbered for "another car" with stock parts instead. A car another mod has already given a part numbered 716 or 816 is left without drift parts.
 - **Saves:** a car fitted with one of these parts needs this mod to load it, as with any part a mod adds. Before uninstalling, put other tires, springs and front anti-roll bars back on those cars.
 

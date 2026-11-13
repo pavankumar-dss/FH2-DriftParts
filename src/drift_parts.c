@@ -59,6 +59,7 @@ enum {
     KIT_NAME = 65345, KIT_DESCRIPTION = 65346,
     // In the car Extra Options hands plugins (see the top of the file).
     CAR_ID_IN_CAR = 0x118, FRONT_ANTI_ROLL_IN_CAR = 0x128 + 6 * 4, STEERING_IN_CAR = 0x1200 + 0x5C,
+    PHYSICS_IN_CAR = 0x4C08, PHYSICS_VTABLE = 0x2EB5E18, STEERING_IN_PHYSICS = 0x58,  // the physics' copy of the steering block
     TUNE_MIN = 30, TUNE_MAX = 80,  // the Steering lock row's range, in degrees
 };
 #define TIRE_TYPE "21"    // UpgradeTypes id of the tire compound
@@ -77,6 +78,8 @@ typedef struct {
 } Settings;
 
 static void (*log_utf8)(const char *);
+static const unsigned char *game_image;  // for checking the physics object's vtable
+static const char *volatile kit_physics;  // the physics we last set the kit's lock on
 static Settings cfg;
 static wchar_t locks_path[MAX_PATH + 16];  // DriftParts.locks.ini: the Steering lock row's per-car values
 
@@ -373,19 +376,35 @@ __declspec(dllexport) void WINAPI FH2PluginVehicleUpdate(const FH2PluginVehicleF
         const int part = *(const int *)(car + FRONT_ANTI_ROLL_IN_CAR);
         const LONG fitted = part > 0 && part % 1000 == PART_N;
         InterlockedExchange(&driven_kit_fitted, fitted);
-        if (!fitted) return;
         float *steering = (float *)(car + STEERING_IN_CAR);
+        const char *physics = *(const char *const *)(car + PHYSICS_IN_CAR);
+        if (!fitted && physics != kit_physics) return;  // nothing of ours on this car
         const float lock = lock_for(id), pad = (float)(lock * cfg.kit_angle_pad / cfg.kit_angle);
-        if (steering[0] == lock && steering[1] == pad) return;  // done
-        const float before = steering[0], before_pad = steering[1];
-        if (!(before > 1 && before < 90 && before_pad > 1 && before_pad < 90)) return;  // not a steering block
-        steering[0] = lock;
-        steering[1] = pad;
-        if (cfg.kit_turn_rate > 0) steering[2] = (float)cfg.kit_turn_rate;                  // SteerMaxAngVelTurning
-        if (cfg.kit_countersteer_rate > 0) steering[4] = (float)cfg.kit_countersteer_rate;  // SteerAngVelCountersteer
-        if (InterlockedIncrement(&kit_cars_logged) <= 20)
-            logf_line("DRIFT PARTS: angle kit on car %d: lock %.1f -> %.1f degrees (%.1f -> %.1f on a controller or keys).\r\n", id, before,
-                      lock, before_pad, pad);
+        if (fitted && (steering[0] != lock || steering[1] != pad)) {
+            const float before = steering[0], before_pad = steering[1];
+            if (!(before > 1 && before < 90 && before_pad > 1 && before_pad < 90)) return;  // not a steering block
+            steering[0] = lock;
+            steering[1] = pad;
+            if (cfg.kit_turn_rate > 0) steering[2] = (float)cfg.kit_turn_rate;                  // SteerMaxAngVelTurning
+            if (cfg.kit_countersteer_rate > 0) steering[4] = (float)cfg.kit_countersteer_rate;  // SteerAngVelCountersteer
+            if (InterlockedIncrement(&kit_cars_logged) <= 20)
+                logf_line("DRIFT PARTS: angle kit on car %d: lock %.1f -> %.1f degrees (%.1f -> %.1f on a controller or keys).\r\n", id,
+                          before, lock, before_pad, pad);
+        }
+        // The physics keeps its own copy, made from the block above when it's set up (the car spawning):
+        // physics+0x58 on, in radians, the turn rates doubled. Without this a lock changed on the Tuning
+        // screen, or a kit fitted or taken off in the Garage, only reached the wheels at the next spawn.
+        // While the kit is on, the copy follows the block; when it comes off, it's put back to the car's
+        // own once, and then left alone.
+        if (!game_image || !physics || *(const unsigned char *const *)physics != game_image + PHYSICS_VTABLE) return;
+        float *sim = (float *)(physics + STEERING_IN_PHYSICS);
+        const float radians = 0.017453292519943295f;
+        if (!(sim[0] > 0.1f && sim[0] < 1.6f && sim[1] > 0.1f && sim[1] < 1.6f)) return;  // not the block we know
+        sim[0] = steering[0] * radians;
+        sim[1] = steering[1] * radians;
+        sim[2] = steering[2] * 2 * radians;
+        sim[4] = steering[4] * 2 * radians;
+        kit_physics = fitted ? physics : NULL;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
 }
@@ -420,6 +439,7 @@ __declspec(dllexport) BOOL WINAPI FH2PluginDatabaseUpdate(const FH2PluginDatabas
 __declspec(dllexport) BOOL WINAPI FH2PluginInitialize(const FH2PluginContext *context) {
     if (!context || context->size < sizeof *context) return TRUE;
     log_utf8 = context->log_utf8;
+    game_image = (const unsigned char *)context->game_image;
     read_settings();
     read_locks();
     static const TuneRowSpec row = {
