@@ -8,12 +8,21 @@
 //               one shop row for it (List_UpgradeTireCompound).
 //   Suspension  Per car, a copy of its best springs and dampers (Race where it has them) with more
 //               caster and front camber, softer springs available and a lower ride height available.
-//   Steering    The game keeps the steering angle per car (Data_Car), not per part, so a part can't
-//               carry it through the database. Until that's hooked in code, [SteeringTest] in
-//               DriftParts.ini (off by default) raises it for ONE car, to try what more angle does.
+//   Drift Angle Kit  Per car, a front anti-roll bar: a copy of its Race one (so its stiffness tunes the
+//               same) that also gives the car more steering lock. The game keeps the steering angle
+//               per car (Data_Car), not per part, so that part can't come from the database: once a
+//               frame, when the car being driven has the kit fitted, the plugin raises the lock it
+//               was built with (FH2PluginVehicleUpdate, below).
 //
 // The game reads compounds, friction curves and spring physics by id with plain SELECTs
 // (game+0x1058AE6, +0x1062xxx), so new rows are picked up like its own.
+//
+// In the car (the object Extra Options hands plugins each frame), the fitted part ids are at car+0x128,
+// 4 bytes each, in the order of the slot table at game+0x2E797F0: engine, drivetrain, body, motor,
+// brakes, springs, front anti-roll bar, ... The car builder (game+0x1056210) builds a definition (on
+// its caller's stack) that ends up at car+0x1200; its loader (game+0x1061070, through game+0x10622C0)
+// reads Data_Car's steering columns into definition+0x5C: SteerMaxAngle, SteerMaxAngleFiltered,
+// SteerMaxAngVelTurning, SteerMaxAngVelStraighten, SteerAngVelCountersteer, ...
 //
 // Every number is in DriftParts.ini next to the DLL, read when the game starts.
 //
@@ -22,9 +31,11 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wchar.h>
 
 #include "fh2_plugin.h"
+#include "tune_row.h"
 
 #define MARKER "FH2_DriftPartsReady"
 
@@ -40,14 +51,19 @@ enum {
     PART_N = 716,                  // the tire row and the spring row (separate tables), and the front physics
     REAR_PHYSICS_N = 816,
     MAX_CAR_ID = 2000000,          // car * 1000 + n stays an int
-    TIRE_LABEL_ID = 0x31000001, SPRING_LABEL_ID = 0x31000002,
+    TIRE_LABEL_ID = 0x31000001, SPRING_LABEL_ID = 0x31000002, KIT_LABEL_ID = 0x31000003,
     // Names are string table references: "_&" + (table << 16 | entry). 0x7091 is the game's Upgrades
     // table; strings.json fills these entries.
     STRING_TABLE = 0x7091,
     TIRE_NAME = 65341, TIRE_DESCRIPTION = 65342, SPRING_NAME = 65343, SPRING_DESCRIPTION = 65344,
+    KIT_NAME = 65345, KIT_DESCRIPTION = 65346,
+    // In the car Extra Options hands plugins (see the top of the file).
+    CAR_ID_IN_CAR = 0x118, FRONT_ANTI_ROLL_IN_CAR = 0x128 + 6 * 4, STEERING_IN_CAR = 0x1200 + 0x5C,
+    TUNE_MIN = 30, TUNE_MAX = 80,  // the Steering lock row's range, in degrees
 };
 #define TIRE_TYPE "21"    // UpgradeTypes id of the tire compound
 #define SPRING_TYPE "13"  // ... and of springs and dampers
+#define KIT_TYPE "14"     // ... and of front anti-roll bars
 
 typedef struct {
     int base_compound;
@@ -56,12 +72,17 @@ typedef struct {
     int tire_price;
     double caster, front_camber, rear_camber, spring_min_scale, ride_height_drop;
     int spring_price;
-    int steer_car;
-    double steer_angle, steer_angle_pad;
+    double kit_angle, kit_angle_pad, kit_turn_rate, kit_countersteer_rate;  // 0 rates = the car's own
+    int kit_price;
 } Settings;
 
 static void (*log_utf8)(const char *);
 static Settings cfg;
+static wchar_t locks_path[MAX_PATH + 16];  // DriftParts.locks.ini: the Steering lock row's per-car values
+
+static void log_line(const char *line) {
+    if (log_utf8) log_utf8(line);
+}
 
 static void logf_line(const char *format, ...) {
     char line[400];
@@ -86,8 +107,13 @@ static void read_settings(void) {
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (const wchar_t *)&read_settings, &self);
     DWORD length = self ? GetModuleFileNameW(self, path, MAX_PATH) : 0;
     wchar_t *dot = length ? wcsrchr(path, L'.') : NULL;
-    if (dot) wcscpy(dot, L".ini");
-    else path[0] = 0;
+    if (dot) {
+        wcscpy(dot, L".locks.ini");
+        wcscpy(locks_path, path);
+        wcscpy(dot, L".ini");
+    } else {
+        path[0] = 0;
+    }
     cfg.base_compound = (int)ini_number(path, L"Tires", L"BaseCompound", 5, 1, 9);
     cfg.side_falloff = ini_number(path, L"Tires", L"SideFalloff", 0.4, 0, 2);
     cfg.power_falloff = ini_number(path, L"Tires", L"PowerFalloff", 0.5, 0, 2);
@@ -100,9 +126,11 @@ static void read_settings(void) {
     cfg.spring_min_scale = ini_number(path, L"Suspension", L"SoftestSpringScale", 0.5, 0.1, 1);
     cfg.ride_height_drop = ini_number(path, L"Suspension", L"RideHeightDrop", 0.015, 0, 0.1);
     cfg.spring_price = (int)ini_number(path, L"Suspension", L"Price", 2500, 0, 1000000);
-    cfg.steer_car = (int)ini_number(path, L"SteeringTest", L"Car", 0, 0, MAX_CAR_ID);
-    cfg.steer_angle = ini_number(path, L"SteeringTest", L"MaxAngle", 60, 10, 85);
-    cfg.steer_angle_pad = ini_number(path, L"SteeringTest", L"MaxAnglePad", 50, 10, 85);
+    cfg.kit_angle = ini_number(path, L"AngleKit", L"MaxAngle", 60, 10, 85);
+    cfg.kit_angle_pad = ini_number(path, L"AngleKit", L"MaxAnglePad", 50, 10, 85);
+    cfg.kit_turn_rate = ini_number(path, L"AngleKit", L"TurnRate", 0, 0, 1000);
+    cfg.kit_countersteer_rate = ini_number(path, L"AngleKit", L"CountersteerRate", 150, 0, 1000);
+    cfg.kit_price = (int)ini_number(path, L"AngleKit", L"Price", 2000, 0, 1000000);
 }
 
 // Runs a statement; fills up to `wanted` integer columns of its first row. 1 on success.
@@ -263,36 +291,146 @@ static int add_suspension(const FH2PluginDatabaseFrame *db, int64_t *added) {
         count(db, "SELECT changes()", added) && run(db, "DROP TABLE FH2_DriftPartsSource");
 }
 
+// A front anti-roll bar per car: its Race bar (Level 3, which every car has) with the same physics, so the
+// Tune page's stiffness slider works as with the Race bar. The extra lock is set on the car below.
+static int add_angle_kit(const FH2PluginDatabaseFrame *db, int64_t *added) {
+    return add_label(db, KIT_LABEL_ID, KIT_TYPE, 3, KIT_NAME, KIT_DESCRIPTION) &&
+           runf(db,
+                "INSERT INTO List_UpgradeAntiSwayFront(Id,Ordinal,Level,ManufacturerID,MassDiff,Price,IsStock,AntiSwayPhysicsID) "
+                "SELECT Ordinal*1000+%d,Ordinal,%d,ManufacturerID,MassDiff,%d,0,AntiSwayPhysicsID FROM List_UpgradeAntiSwayFront u "
+                "WHERE u.rowid IN (SELECT MAX(rowid) FROM List_UpgradeAntiSwayFront WHERE Level=3 AND Ordinal BETWEEN 1 AND %d "
+                "AND Ordinal IN (SELECT Id FROM Data_Car) GROUP BY Ordinal) "
+                "AND u.AntiSwayPhysicsID IN (SELECT AntiSwayPhysicsID FROM List_AntiSwayPhysics) "
+                "AND u.Ordinal*1000+%d NOT IN (SELECT Id FROM List_UpgradeAntiSwayFront)",
+                PART_N, LEVEL, cfg.kit_price, MAX_CAR_ID, PART_N) &&
+           count(db, "SELECT changes()", added);
+}
+
+// ---- the steering lock, on the driven car -------------------------------------------------------------
+// Extra Options hands plugins the local car once a frame. Its Data_Car id is at car+0x118, its fitted
+// front anti-roll bar at car+0x140 and the steering block it was built with at car+0x125C. A rebuild
+// (buying a part, changing car) writes the car's own lock back; the next frame sets the kit's again.
+//
+// The lock is per car (the Tuning screen's Alignment > Steering lock row, tune_row.c), kept in DriftParts.locks.ini
+// next to the DLL; a car without one gets [AngleKit] MaxAngle. The controller and keys lock keeps the
+// ini's ratio to it (50 to 60 by default).
+enum { MAX_LOCKS = 2048 };
+static struct { int car; float lock; } locks[MAX_LOCKS];
+static volatile LONG lock_count, driven_car_id, driven_kit_fitted, kit_cars_logged;
+
+static float lock_for(int car) {
+    for (LONG i = 0, n = lock_count; i < n; ++i)
+        if (locks[i].car == car) return locks[i].lock;
+    return (float)cfg.kit_angle;
+}
+
+static void read_locks(void) {
+    static wchar_t section[MAX_LOCKS * 16];
+    if (!locks_path[0] || !GetPrivateProfileSectionW(L"Lock", section, ARRAYSIZE(section), locks_path)) return;
+    for (const wchar_t *line = section; *line && lock_count < MAX_LOCKS; line += wcslen(line) + 1) {
+        wchar_t *end = NULL;
+        long car = wcstol(line, &end, 10);
+        double lock = end && *end == L'=' ? wcstod(end + 1, NULL) : 0;
+        if (car > 0 && car <= MAX_CAR_ID && lock >= TUNE_MIN && lock <= TUNE_MAX) {
+            locks[lock_count].car = (int)car;
+            locks[lock_count].lock = (float)lock;
+            ++lock_count;
+        }
+    }
+}
+
+static float tune_get(void) { return lock_for((int)driven_car_id); }
+static int tune_fitted(void) { return driven_kit_fitted != 0; }
+
+// From the Tuning screen (its UI thread). The next frame puts it on the car.
+static int tune_set(float lock) {
+    const int car = (int)driven_car_id;
+    if (car <= 0 || lock < TUNE_MIN || lock > TUNE_MAX) return 0;
+    LONG i = 0, n = lock_count;
+    while (i < n && locks[i].car != car) ++i;
+    if (i < n && locks[i].lock == lock) return 1;
+    if (i == n) {
+        if (n == MAX_LOCKS) return 0;
+        locks[n].car = car;
+        locks[n].lock = lock;
+        InterlockedIncrement(&lock_count);
+    } else {
+        locks[i].lock = lock;
+    }
+    wchar_t key[16], value[16];
+    swprintf(key, ARRAYSIZE(key), L"%d", car);
+    swprintf(value, ARRAYSIZE(value), L"%.0f", lock);
+    if (locks_path[0]) WritePrivateProfileStringW(L"Lock", key, value, locks_path);
+    return 1;
+}
+
+__declspec(dllexport) void WINAPI FH2PluginVehicleUpdate(const FH2PluginVehicleFrame *frame) {
+    if (!frame || frame->size < sizeof *frame || !frame->car) return;
+    __try {
+        const char *car = (const char *)frame->car;
+        const int id = *(const int *)(car + CAR_ID_IN_CAR);
+        if (id > 0 && id <= MAX_CAR_ID) InterlockedExchange(&driven_car_id, id);
+        const int part = *(const int *)(car + FRONT_ANTI_ROLL_IN_CAR);
+        const LONG fitted = part > 0 && part % 1000 == PART_N;
+        InterlockedExchange(&driven_kit_fitted, fitted);
+        if (!fitted) return;
+        float *steering = (float *)(car + STEERING_IN_CAR);
+        const float lock = lock_for(id), pad = (float)(lock * cfg.kit_angle_pad / cfg.kit_angle);
+        if (steering[0] == lock && steering[1] == pad) return;  // done
+        const float before = steering[0], before_pad = steering[1];
+        if (!(before > 1 && before < 90 && before_pad > 1 && before_pad < 90)) return;  // not a steering block
+        steering[0] = lock;
+        steering[1] = pad;
+        if (cfg.kit_turn_rate > 0) steering[2] = (float)cfg.kit_turn_rate;                  // SteerMaxAngVelTurning
+        if (cfg.kit_countersteer_rate > 0) steering[4] = (float)cfg.kit_countersteer_rate;  // SteerAngVelCountersteer
+        if (InterlockedIncrement(&kit_cars_logged) <= 20)
+            logf_line("DRIFT PARTS: angle kit on car %d: lock %.1f -> %.1f degrees (%.1f -> %.1f on a controller or keys).\r\n", id, before,
+                      lock, before_pad, pad);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+
 __declspec(dllexport) BOOL WINAPI FH2PluginDatabaseUpdate(const FH2PluginDatabaseFrame *db) {
-    int64_t marked = 0, tires = 0, springs = 0;
+    int64_t marked = 0, tires = 0, springs = 0, kits = 0;
     if (!db || db->size < sizeof *db || !db->database || !db->prepare || !db->step || !db->finalize || !db->column_int64) return FALSE;
     if (!count(db, "SELECT COUNT(*) FROM sqlite_master WHERE name='" MARKER "'", &marked)) return FALSE;
-    if (marked) return TRUE;
+    // A database 0.1.0 already went through (Version 1) has the tires and suspension: it only needs the kit.
+    int64_t version = 0;
+    if (marked && !count(db, "SELECT MAX(Version) FROM " MARKER, &version)) return FALSE;
+    if (marked && version >= 2) return TRUE;
     ULONGLONG started = GetTickCount64();
     if (!run(db, "SAVEPOINT drift_parts")) return FALSE;
-    int ok = add_tires(db, &tires);
-    if (!ok) logf_line("DRIFT PARTS: couldn't add the tires.\r\n");
-    if (ok && !(ok = add_suspension(db, &springs))) logf_line("DRIFT PARTS: couldn't add the suspension.\r\n");
-    if (ok && cfg.steer_car)
-        ok = runf(db, "UPDATE Data_Car SET SteerMaxAngle=%.9g,SteerMaxAngleFiltered=%.9g WHERE Id=%d", cfg.steer_angle, cfg.steer_angle_pad,
-                  cfg.steer_car);
-    ok = ok && run(db, "CREATE TABLE " MARKER " AS SELECT 1 AS Version");
+    int ok = 1;
+    if (!marked && !(ok = add_tires(db, &tires))) logf_line("DRIFT PARTS: couldn't add the tires.\r\n");
+    if (!marked && ok && !(ok = add_suspension(db, &springs))) logf_line("DRIFT PARTS: couldn't add the suspension.\r\n");
+    if (ok && !(ok = add_angle_kit(db, &kits))) logf_line("DRIFT PARTS: couldn't add the angle kit.\r\n");
+    if (ok && marked) ok = run(db, "DROP TABLE " MARKER);
+    ok = ok && run(db, "CREATE TABLE " MARKER " AS SELECT 2 AS Version");
     if (!ok || !run(db, "RELEASE drift_parts")) {
         run(db, "ROLLBACK TO drift_parts");
         run(db, "RELEASE drift_parts");
         logf_line("DRIFT PARTS: rolled back; nothing added.\r\n");
         return FALSE;
     }
-    logf_line("DRIFT PARTS: added drift tires for %lld cars and drift suspension for %lld in %llu ms.\r\n", (long long)tires, (long long)springs,
-              (unsigned long long)(GetTickCount64() - started));
-    if (cfg.steer_car)
-        logf_line("DRIFT PARTS: steering test: car %d steers to %.1f degrees (%.1f on a controller or keys).\r\n", cfg.steer_car, cfg.steer_angle,
-                  cfg.steer_angle_pad);
+    logf_line("DRIFT PARTS: added drift tires for %lld cars, drift suspension for %lld and the angle kit for %lld in %llu ms.\r\n",
+              (long long)tires, (long long)springs, (long long)kits, (unsigned long long)(GetTickCount64() - started));
     return TRUE;
 }
 
 __declspec(dllexport) BOOL WINAPI FH2PluginInitialize(const FH2PluginContext *context) {
-    if (context && context->size >= sizeof *context) log_utf8 = context->log_utf8;
+    if (!context || context->size < sizeof *context) return TRUE;
+    log_utf8 = context->log_utf8;
     read_settings();
+    read_locks();
+    static const TuneRowSpec row = {
+        "DRIFT ANGLE KIT", "STEERING LOCK",
+        "How far the front wheels turn with the Drift Angle Kit fitted, in degrees on a wheel (a little less on a controller or keys). "
+        "More lock holds bigger drift angles and catches slides that would otherwise spin; less feels calmer. Stock cars turn 42. "
+        "Needs the Drift Angle Kit: Upgrades, Platform and Handling, Front anti-roll bars. Kept for this car.",
+        TUNE_MIN, TUNE_MAX, 0, tune_get, tune_set, tune_fitted, log_line,
+    };
+    TuneRowSpec spec = row;
+    spec.marker = (float)cfg.kit_angle;
+    tune_row_install((unsigned char *)context->game_image, context->game_image_size, &spec);
     return TRUE;
 }

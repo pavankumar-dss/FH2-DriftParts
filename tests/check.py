@@ -1,10 +1,12 @@
 # prepare <game> <copy>: a copy of the game's database, with a snapshot of the tables the plugin adds to.
 #   <game> can also be a database file: Extra Options 0.6 keeps the one it merged from every mod in
 #   mods/Cache/fh2-db/merged.sqlite, which has the mods' cars too.
-# verify <copy>: checks what the plugin added (expects the default DriftParts.ini; [SteeringTest] Car may be 0 or 1022).
+# verify <copy>: checks what the plugin added (expects the default DriftParts.ini).
+#   From a database Drift Parts 0.1.0 already went through (merged.sqlite with 0.1.0 installed), only the
+#   angle kit is expected to be added.
 import sqlite3, shutil, os, sys
 TABLES = ["List_TireCompound", "List_TireFrictionCurve", "List_TireFrictionMultiCurve", "List_UpgradeTireCompound",
-          "List_UpgradeSpringDamper", "List_SpringDamperPhysics", "Upgrades", "Data_Car"]
+          "List_UpgradeSpringDamper", "List_SpringDamperPhysics", "Upgrades", "Data_Car", "List_UpgradeAntiSwayFront"]
 BEST = "(SELECT x.rowid FROM Before_List_UpgradeSpringDamper x WHERE x.Ordinal=u.Ordinal AND x.Level BETWEEN 0 AND 4 ORDER BY CASE WHEN x.Level<4 THEN x.Level ELSE -1 END DESC, x.rowid LIMIT 1)"
 
 def prepare(game, copy):
@@ -31,7 +33,33 @@ def verify(copy):
         if t == "Data_Car": continue
         expect(one(f"SELECT COUNT(*) FROM (SELECT * FROM Before_{t} EXCEPT SELECT * FROM {t})") == 0, f"{t}: the existing rows are untouched")
     cars = one("SELECT COUNT(*) FROM Data_Car")
+    upgrade = one("SELECT COUNT(*) FROM Before_List_TireCompound WHERE TireCompoundID=77") == 1
+    if upgrade: print("   (a database 0.1.0 already went through: only the angle kit should be new)")
+    expect(one("SELECT COUNT(*) FROM (SELECT * FROM Data_Car EXCEPT SELECT * FROM Before_Data_Car)") == 0, "no car is changed")
+    if not upgrade: verify_tires_and_suspension(c, one, cars)
+    else:
+        for t in TABLES:
+            if t in ("Upgrades", "List_UpgradeAntiSwayFront"): continue
+            expect(one(f"SELECT COUNT(*) FROM {t}") == one(f"SELECT COUNT(*) FROM Before_{t}"), f"{t}: nothing added")
 
+    # Angle kit
+    rows = c.execute("SELECT n.Id,n.Ordinal,n.IsStock,n.Price,n.AntiSwayPhysicsID,n.ManufacturerID,n.MassDiff,r.AntiSwayPhysicsID,r.ManufacturerID,r.MassDiff "
+                     "FROM List_UpgradeAntiSwayFront n JOIN Before_List_UpgradeAntiSwayFront r ON r.Ordinal=n.Ordinal AND r.Level=3 WHERE n.Level=16").fetchall()
+    expect(len(rows) == cars and len({r[1] for r in rows}) == cars, f"an angle kit for each of the {cars} cars")
+    expect(all(r[0] == r[1] * 1000 + 716 and r[2] == 0 and r[3] == 2000 and r[4:7] == r[7:10] for r in rows),
+           "its rows: id car * 1000 + 716, not stock, 2,000 CR, the Race bar's physics, maker and weight")
+    expect(one("SELECT COUNT(*) FROM List_UpgradeAntiSwayFront") == one("SELECT COUNT(*) FROM Before_List_UpgradeAntiSwayFront") + cars, "nothing else added to the front bars")
+    label = c.execute("SELECT TypeId,Name,Description,IconPath FROM Upgrades WHERE id=0x31000003").fetchone()
+    expect(label is not None and label[0] == "14" and label[3] and int(label[1][2:]) == (0x7091 << 16 | 65345) and int(label[2][2:]) == (0x7091 << 16 | 65346),
+           "its label: front anti-roll bars (14), the game's icon, strings 65345 and 65346")
+    expect(one("SELECT COUNT(*) FROM Upgrades") == one("SELECT COUNT(*) FROM Before_Upgrades") + (1 if upgrade else 3), "no other label added")
+    expect(c.execute("SELECT Version FROM FH2_DriftPartsReady").fetchall() == [(2,)], "the marker is there, version 2")
+    expect(one("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'FH2_DriftPartsS%'") == 0, "no scratch tables left behind")
+    db.close()
+    print("failed:", fails)
+    return 1 if fails else 0
+
+def verify_tires_and_suspension(c, one, cars):
     # Tires
     expect(one("SELECT COUNT(*) FROM List_TireCompound") == one("SELECT COUNT(*) FROM Before_List_TireCompound") + 1, "one new compound")
     cols = [r[1] for r in c.execute("PRAGMA table_info(List_TireCompound)")]
@@ -91,18 +119,9 @@ def verify(copy):
     expect([l[0] for l in labels] == ["21", "13"] and all(l[3] for l in labels), "two labels (tires, springs), with the game's icons")
     expect(all(int(l[1][2:]) >> 16 == 0x7091 and int(l[2][2:]) >> 16 == 0x7091 for l in labels), "named through the game's Upgrades string table")
 
-    # Steering test
-    diff = c.execute("SELECT Id,SteerMaxAngle,SteerMaxAngleFiltered FROM (SELECT * FROM Data_Car EXCEPT SELECT * FROM Before_Data_Car)").fetchall()
-    if diff: expect(diff == [(1022, 60.0, 50.0)], f"steering test: only car 1022 changed, to 60 and 50 degrees ({diff})")
-    else: expect(c.execute("SELECT COUNT(*) FROM (SELECT * FROM Before_Data_Car EXCEPT SELECT * FROM Data_Car)").fetchone()[0] == 0, "steering test off (the default): no car is changed")
-    expect(one("SELECT COUNT(*) FROM sqlite_master WHERE name='FH2_DriftPartsReady'") == 1, "the marker is there")
-    expect(one("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'FH2_DriftPartsS%'") == 0, "no scratch tables left behind")
     f = c.execute("SELECT u.Id,p.MinRideHeight,p.MinSpringRate,p.DefSpringRate,p.StaticCamber,p.Caster FROM List_UpgradeSpringDamper u "
                   "JOIN List_SpringDamperPhysics p ON p.SpringDamperPhysicsID=u.FrontSpringDamperPhysicsID WHERE u.Level=16 AND u.Ordinal=1022").fetchone()
     print("   the F430's drift front end (id, lowest ride height, softest spring, default spring, camber, caster):", f)
-    db.close()
-    print("failed:", fails)
-    return 1 if fails else 0
 
 if sys.argv[1] == "prepare": prepare(sys.argv[2], sys.argv[3])
 else: sys.exit(verify(sys.argv[2]))

@@ -1,15 +1,18 @@
 # Drift Parts
 
-A **Drift tire compound** and **Drift springs and dampers** for every car in **Forza Horizon 2 on PC (Azimuth)**, bought in the Upgrade Shop like any other part. It's an [Extra Options](https://github.com/RokkuDayo/ForzaHorizon2_ExtraOptions) plugin, it works on modded cars too, and it was made to go with [Drift Zones](https://github.com/Philipp55112/fh2-drift-zones).
+A **Drift tire compound**, **Drift springs and dampers** and a **Drift Angle Kit** for every car in **Forza Horizon 2 on PC (Azimuth)**, bought in the Upgrade Shop like any other part. It's an [Extra Options](https://github.com/RokkuDayo/ForzaHorizon2_ExtraOptions) plugin, it works on modded cars too, and it was made to go with [Drift Zones](https://github.com/Philipp55112/fh2-drift-zones).
 
-**This is a first build (0.1.0).** It works and has been driven, but the feel is one person's first pass. Every number is in an ini file, so you can change it.
+**This is an early build (0.2.0).** It works and has been driven, but the feel is one person's first pass. Every number is in an ini file, so you can change it.
 
 ## What it adds
 
-In the Garage, go to **Upgrades > Custom upgrade**. Both parts are last in their lists.
+In the Garage, go to **Upgrades > Custom upgrade**. Each part is last in its list.
 
 - **Drift Tire Compound** (Tires and Rims > Tyre Compound, 3,000 CR): grips like the Street tire up to its peak, then keeps most of that grip at big slip angles and under wheelspin. At full slide it holds about 94% of its peak sideways grip, where the Street tire holds about 85%, so the car holds a drift instead of snapping. It's a Street-level tire, so a car that came on Sport or Race tires drops in PI.
 - **Drift Springs and Dampers** (Platform and Handling > Spring and Dampers, 2,500 CR): your car's Race springs and dampers with softer springs available (down to half the Race suspension's softest) and a lower ride height available (15 mm lower). Everything can be tuned afterwards.
+- **Drift Angle Kit** (Platform and Handling > Front Anti-roll Bars, 2,000 CR): your car's Race front anti-roll bar (same stiffness range, tuned the same way) with a drift steering angle kit. It's meant for drift builds: the extra lock doesn't help grip driving. The front wheels turn to 60° on a wheel and 50° on a controller or keys, where stock cars stop at 42° and 29°, and they swing back faster when you countersteer.
+
+With the Drift Angle Kit fitted, **Tuning > Alignment** has a **Steering lock** slider (30° to 80°) under Front Caster. It's kept per car and takes effect straight away; the grey marker is the kit's default.
 
 ## How it drives, so far
 
@@ -28,6 +31,8 @@ If you want it different, open `plugins\DriftParts.ini` in the mod's folder and 
 | More angle before it spins, easier to catch | `SideFalloff=0.2` |
 | Less grip overall, a looser car | `SideGrip=0.9` |
 | A grippier drift tire for fast cars | `BaseCompound=6` (Sport) |
+| A different default lock for the Drift Angle Kit | `[AngleKit] MaxAngle` (or the Steering lock slider, per car) |
+| Slower or faster countersteer with the kit | `CountersteerRate` (stock 105; `0` keeps the car's own) |
 
 These are suggestions, not tested settings. If you find numbers you like, an issue or pull request with them is welcome.
 
@@ -37,12 +42,12 @@ These are suggestions, not tested settings. If you find numbers you like, an iss
 |---|---|
 | **Forza Horizon 2** (Xbox One version) | Build 1.0.0.64 |
 | **Azimuth** | 1.0.1 |
-| **[Extra Options](https://github.com/RokkuDayo/ForzaHorizon2_ExtraOptions)** by RokkuDayo | 0.4.4 and 0.6.0 |
+| **[Extra Options](https://github.com/RokkuDayo/ForzaHorizon2_ExtraOptions)** by RokkuDayo | 0.6.0 (0.1.0 also ran on 0.4.4) |
 
 ## Install
 
 1. Close the game.
-2. Download `DriftParts-0.1.0.zip` from **Releases** and drag the `mods` folder inside it onto your Azimuth folder (the one with `azimuth.exe`). You get:
+2. Download `DriftParts-0.2.0.zip` from **Releases** and drag the `mods` folder inside it onto your Azimuth folder (the one with `azimuth.exe`). You get:
 
    ```
    mods\Forza Horizon 2\Drift Parts\mod.json
@@ -56,21 +61,25 @@ These are suggestions, not tested settings. If you find numbers you like, an iss
 
 3. Start the game. Extra Options turns on new mod folders by itself.
 
-`FH2_ExtraOptions.log` beside `azimuth.exe` should then have a line like `DRIFT PARTS: added drift tires for 354 cars and drift suspension for 354`.
+`FH2_ExtraOptions.log` beside `azimuth.exe` should then have the lines `DRIFT PARTS: Steering lock row ready for the Tuning screen.` and `DRIFT PARTS: added drift tires for 354 cars, drift suspension for 354 and the angle kit for 354`.
+
+Updating from 0.1.0: copy the new files over the old ones. 0.1.0's `[SteeringTest]` is gone; the Drift Angle Kit replaces it.
 
 ## Good to know
 
 - **Camber and caster:** the drift suspension is built with caster 7 and camber -3 front, -1 rear, but the Tune page keeps showing your car's own alignment after you fit it. Set the alignment you want on the Tune page.
-- **Steering angle isn't part of it yet.** The game keeps steering angle per car, not per part, so the suspension can't carry more lock. `[SteeringTest]` in the ini is an experiment that raises it on one car you name; it's off by default.
-- **Other mods:** it adds rows to the game's database and hooks nothing, so it doesn't interfere with other mods' code. Its parts are numbered the game's own way (car × 1000 + n), which matters with the CommunityGarage mod: that one builds a car carrying a part numbered for "another car" with stock parts instead. A car another mod has already given a part numbered 716 or 816 is left without drift parts.
-- **Saves:** a car fitted with one of these parts needs this mod to load it, as with any part a mod adds. Before uninstalling, put other tires and springs back on those cars.
+- **The Drift Angle Kit's lock is set on the car you're driving.** The game keeps steering angle per car, not per part, so the plugin raises it on the car Extra Options says you're driving, each time that car is built with the kit. AI cars with the kit (there shouldn't be any) keep their own lock.
+- **The Steering lock slider** only shows on a car with the Drift Angle Kit fitted. Per-car values are kept in `plugins\DriftParts.locks.ini`.
+- **The wheels on screen don't look turned further.** The extra lock is in the car's physics (at full lock on keys the front wheels go from about 30° to 50°, and the car holds bigger angles), but the steering animation you see doesn't follow it yet.
+- **Other mods:** it adds rows to the game's database and patches no game code. For the Steering lock row it adds a named property to the Tuning screen and chains onto Extra Options' own screen-loading hook, the way Enhanced Tuning does; the two work side by side (tested with Enhanced Tuning installed). Its parts are numbered the game's own way (car × 1000 + n), which matters with the CommunityGarage mod: that one builds a car carrying a part numbered for "another car" with stock parts instead. A car another mod has already given a part numbered 716 or 816 is left without drift parts.
+- **Saves:** a car fitted with one of these parts needs this mod to load it, as with any part a mod adds. Before uninstalling, put other tires, springs and front anti-roll bars back on those cars.
 
 ## Uninstall
 
-1. Put other tires and springs back on any car that has these (see above).
+1. Put other tires, springs and front anti-roll bars back on any car that has these (see above).
 2. Delete the `Drift Parts` folder and its line in `loadorder.txt` beside it.
 
-No game file is changed. The parts only exist in the game's database in memory while the game runs.
+No game file is changed. The parts only exist in the game's database in memory while the game runs. The only file it writes is its own `DriftParts.locks.ini`.
 
 ## How it works
 
@@ -78,9 +87,12 @@ Once per launch, when Extra Options hands plugins its merged in-memory database,
 
 - copies one stock tire compound and its sideways and under-power friction curves, scaling how far each curve drops past its peak, and gives every car one shop row for the new compound;
 - copies each car's best road springs and dampers (Race where it has them, Rally on the few off-roaders with nothing else) with the wider limits, as a new part;
-- adds the two shop labels, whose text comes from `strings.json`.
+- gives every car an Drift Angle Kit: a copy of its Race front anti-roll bar row, as a new part;
+- adds the three shop labels, whose text comes from `strings.json`.
 
-The game reads compounds, friction curves and spring physics by id, so it picks the new rows up like its own.
+The game reads compounds, friction curves, spring physics and anti-roll bars by id, so it picks the new rows up like its own.
+
+The steering lock is a value of the car, not of a part, so the Drift Angle Kit's comes from code: Extra Options hands plugins the car you're driving once a frame, and when its fitted front anti-roll bar is the kit, the plugin sets the steering lock the car was built with (and the countersteer speed). The Tuning screen's row is a native property that slider binds to, plus a few lines of XAML added to that screen as it loads.
 
 ## Building
 
@@ -94,11 +106,12 @@ build\run_on_copy.exe "release\Drift Parts\plugins\DriftParts.dll" copy.slt
 python tests\check.py verify copy.slt
 ```
 
-`prepare` also takes a database file: Extra Options 0.6 keeps the one it merged from every installed mod in `mods\Cache\fh2-db\merged.sqlite`, which checks the mods' cars as well. `verify` expects the default ini, with `[SteeringTest] Car=1022` to check the steering test too.
+`prepare` also takes a database file: Extra Options 0.6 keeps the one it merged from every installed mod in `mods\Cache\fh2-db\merged.sqlite`, which checks the mods' cars as well. `verify` expects the default ini. Run on a database Drift Parts 0.1.0 already went through, it checks that only the Drift Angle Kit is added. The Drift Angle Kit's lock and the Tuning row need the game: they were checked in game (the lock with TestKit reading the car's physics: 50° at full lock on keys with the kit, 29° without).
 
 ## Credits
 
 - **[Forza Horizon 2 Extra Options](https://github.com/RokkuDayo/ForzaHorizon2_ExtraOptions)** by Arthur (RokkuDayo), GPL-3.0. Drift Parts is an Extra Options plugin: it uses Extra Options' mod loader, its plugin API (`include\fh2_plugin.h` is Extra Options' plugin API header), and the merged in-memory game database it hands to plugins.
+- **[Enhanced Tuning](https://github.com/Pantsedit/FH2-EnhancedTuning)** by Pantsedit, GPL-3.0. The Steering lock row is added to the Tuning screen the way Enhanced Tuning adds its tab: its native slider property and Tuning-screen XAML code were adapted for `src\tune_row.c`.
 - **[Drift Zones](https://github.com/Philipp55112/fh2-drift-zones)** by Philipp55112, the reason to want drift parts. Nothing from it is included.
 - **[Azimuth](https://almost-there-games.itch.io/azimuth)** by Almost There Games, which runs Forza Horizon 2 on Windows. Nothing from it is included.
 
