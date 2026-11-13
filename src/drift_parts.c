@@ -1,4 +1,4 @@
-// Drift Parts: a Drift tire compound and Drift springs and dampers for every car.
+// Drift Parts: drift tires, suspension, steering angle kit, transmission and differential for every car.
 //
 // An Extra Options plugin. Once per merged database it adds:
 //
@@ -13,6 +13,13 @@
 //               per car (Data_Car), not per part, so that part can't come from the database: once a
 //               frame, when the car being driven has the kit fitted, the plugin raises the lock it
 //               was built with (FH2PluginVehicleUpdate, below).
+//   Transmission  Per drivetrain, a copy of its Race gearbox with evenly spaced (close) gears, a taller first
+//               and a shorter final drive, so every upshift lands the engine at the same revs.
+//   Differential  Per drivetrain, a copy of its Race diff that locks the driven wheels hard under power.
+//
+// Gearboxes and diffs belong to a drivetrain (DrivetrainID), not a car: a car's drivetrain swaps have
+// their own. Their ids are the game's DrivetrainID * 1000 + n, and CommunityGarage doesn't check them
+// against the car (it checks part slots 0..11 and 34..41; transmission is 31, differential 33).
 //
 // The game reads compounds, friction curves and spring physics by id with plain SELECTs
 // (game+0x1058AE6, +0x1062xxx), so new rows are picked up like its own.
@@ -28,6 +35,7 @@
 //
 // Nothing here touches a file: it's the merged database in memory. A car saved with one of these
 // parts needs this mod installed, as it does with any added part.
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,12 +59,23 @@ enum {
     PART_N = 716,                  // the tire row and the spring row (separate tables), and the front physics
     REAR_PHYSICS_N = 816,
     MAX_CAR_ID = 2000000,          // car * 1000 + n stays an int
+    // drivetrain * 1000 + n stays below Extra Options' transmission swaps (0x20000000 up) and Gearbox Upgrades (0x30000000 up)
+    MAX_DRIVETRAIN_ID = 500000,
+    // Gearbox Upgrades has Levels 16..23 in the transmission table (and Extra Options' optional swaps 24 up), and the
+    // shop finds a part's label by its type and Level, so the drift gearbox takes 15.
+    TRANSMISSION_LEVEL = 15,
+    MAX_GEARS = 8,                 // NumGears counts reverse and the game caps it at 9 (game+0x10647e6)
+    MIN_DRIFT_GEARS = 5,           // Gears=0 keeps the car's own number of gears, but no fewer than this
+    MAX_DRIVETRAINS = 8192,
     TIRE_LABEL_ID = 0x31000001, SPRING_LABEL_ID = 0x31000002, KIT_LABEL_ID = 0x31000003,
+    TRANSMISSION_LABEL_ID = 0x31000004, DIFF_LABEL_ID = 0x31000005,
     // Names are string table references: "_&" + (table << 16 | entry). 0x7091 is the game's Upgrades
     // table; strings.json fills these entries.
     STRING_TABLE = 0x7091,
     TIRE_NAME = 65341, TIRE_DESCRIPTION = 65342, SPRING_NAME = 65343, SPRING_DESCRIPTION = 65344,
     KIT_NAME = 65345, KIT_DESCRIPTION = 65346,
+    TRANSMISSION_NAME = 65347, TRANSMISSION_DESCRIPTION = 65348, DIFF_NAME = 65349, DIFF_DESCRIPTION = 65350,
+    DRIVETYPE_FWD = 1, DRIVETYPE_RWD = 2, DRIVETYPE_AWD = 3,  // Data_Drivetrain.DrivetypeID
     // In the car Extra Options hands plugins (see the top of the file).
     CAR_ID_IN_CAR = 0x118, FRONT_ANTI_ROLL_IN_CAR = 0x128 + 6 * 4, STEERING_IN_CAR = 0x1200 + 0x5C,
     PHYSICS_IN_CAR = 0x4C08, PHYSICS_VTABLE = 0x2EB5E18, STEERING_IN_PHYSICS = 0x58,  // the physics' copy of the steering block
@@ -65,6 +84,16 @@ enum {
 #define TIRE_TYPE "21"    // UpgradeTypes id of the tire compound
 #define SPRING_TYPE "13"  // ... and of springs and dampers
 #define KIT_TYPE "14"     // ... and of front anti-roll bars
+#define TRANSMISSION_TYPE "15"
+#define DIFF_TYPE "19"
+// The Tune page's limits (media\physics\PhysicsSettings.ini, CarTuning\Tune...): ratios outside them
+// would be clamped there, and its diff percentages are of these torques.
+#define TUNE_FINAL_DRIVE_MIN 2.2
+#define TUNE_FINAL_DRIVE_MAX 6.1
+#define TUNE_GEAR_MIN 0.48
+#define TUNE_GEAR_MAX 6.0
+#define TUNE_LSD_ACCEL_MAX 2000.0
+#define TUNE_LSD_DECEL_MAX 1000.0
 
 typedef struct {
     int base_compound;
@@ -75,6 +104,13 @@ typedef struct {
     int spring_price;
     double kit_angle, kit_angle_pad, kit_turn_rate, kit_countersteer_rate;  // 0 rates = the car's own
     int kit_price;
+    int gears;                            // forward gears; 0 = the Race gearbox's, at least MIN_DRIFT_GEARS
+    double first_gear_scale, top_gear_scale;  // overall ratio against the Race gearbox's (lower = taller)
+    double shift_time;                    // seconds; 0 = the Race gearbox's
+    int transmission_price;
+    double diff_accel, diff_decel;        // the driven axle's lock, percent of the Tune page's range
+    double diff_front_accel, diff_front_decel, diff_rear_split;  // four-wheel drive's front axle and torque split
+    int diff_price;
 } Settings;
 
 static void (*log_utf8)(const char *);
@@ -134,6 +170,18 @@ static void read_settings(void) {
     cfg.kit_turn_rate = ini_number(path, L"AngleKit", L"TurnRate", 0, 0, 1000);
     cfg.kit_countersteer_rate = ini_number(path, L"AngleKit", L"CountersteerRate", 150, 0, 1000);
     cfg.kit_price = (int)ini_number(path, L"AngleKit", L"Price", 2000, 0, 1000000);
+    cfg.gears = (int)ini_number(path, L"Transmission", L"Gears", 0, 0, MAX_GEARS);
+    if (cfg.gears && cfg.gears < 3) cfg.gears = 0;
+    cfg.first_gear_scale = ini_number(path, L"Transmission", L"FirstGearScale", 0.85, 0.3, 2);
+    cfg.top_gear_scale = ini_number(path, L"Transmission", L"TopGearScale", 1.1, 0.5, 2);
+    cfg.shift_time = ini_number(path, L"Transmission", L"ShiftTime", 0, 0, 1);
+    cfg.transmission_price = (int)ini_number(path, L"Transmission", L"Price", 2500, 0, 1000000);
+    cfg.diff_accel = ini_number(path, L"Differential", L"Accel", 100, 0, 100);
+    cfg.diff_decel = ini_number(path, L"Differential", L"Decel", 50, 0, 100);
+    cfg.diff_front_accel = ini_number(path, L"Differential", L"FrontAccel", 25, 0, 100);
+    cfg.diff_front_decel = ini_number(path, L"Differential", L"FrontDecel", 0, 0, 100);
+    cfg.diff_rear_split = ini_number(path, L"Differential", L"RearSplit", 0.8, 0.01, 0.99);
+    cfg.diff_price = (int)ini_number(path, L"Differential", L"Price", 2250, 0, 1000000);
 }
 
 // Runs a statement; fills up to `wanted` integer columns of its first row. 1 on success.
@@ -208,12 +256,12 @@ static int add_multi_curve(const FH2PluginDatabaseFrame *db, int64_t source, int
                 id, first_curve, first_curve + 1, (long long)source);
 }
 
-static int add_label(const FH2PluginDatabaseFrame *db, int id, const char *type, int icon_level, int name, int description) {
+static int add_label(const FH2PluginDatabaseFrame *db, int id, const char *type, int level, int icon_level, int name, int description) {
     int64_t changed = 0;
     return runf(db,
                 "INSERT INTO Upgrades(id,TypeId,IsException,Name,Level,Description,IconPath,ImagePath) "
                 "SELECT %d,'%s',0,'_&%u',%d,'_&%u',IconPath,ImagePath FROM Upgrades WHERE TypeId='%s' AND Level=%d AND IsException=0 LIMIT 1",
-                id, type, ((unsigned)STRING_TABLE << 16) | (unsigned)name, LEVEL, ((unsigned)STRING_TABLE << 16) | (unsigned)description, type,
+                id, type, ((unsigned)STRING_TABLE << 16) | (unsigned)name, level, ((unsigned)STRING_TABLE << 16) | (unsigned)description, type,
                 icon_level) &&
            count(db, "SELECT changes()", &changed) && changed == 1;
 }
@@ -234,7 +282,7 @@ static int add_tires(const FH2PluginDatabaseFrame *db, int64_t *added) {
                 "FrictionMultiCurveLongitudinalAccelID=%d",
                 COMPOUND_ID, COMPOUND_ID, CURVE_BASE, CURVE_BASE + 1) &&
            run(db, "INSERT INTO List_TireCompound SELECT * FROM FH2_DriftPartsScratch") && run(db, "DROP TABLE FH2_DriftPartsScratch") &&
-           add_label(db, TIRE_LABEL_ID, TIRE_TYPE, 2, TIRE_NAME, TIRE_DESCRIPTION) &&
+           add_label(db, TIRE_LABEL_ID, TIRE_TYPE, LEVEL, 2, TIRE_NAME, TIRE_DESCRIPTION) &&
            runf(db,
                 "INSERT INTO List_UpgradeTireCompound(Id,Ordinal,Level,IsStock,TireCompoundID,ManufacturerID,Price,MassDiff,DragScale,"
                 "WindInstabilityScale,RequiresGraphics,TireModelName) "
@@ -284,7 +332,7 @@ static int add_suspension(const FH2PluginDatabaseFrame *db, int64_t *added) {
              MAX_CAR_ID, PART_N, PART_N, REAR_PHYSICS_N) &&
         add_physics(db, PART_N, "FrontSpringDamperPhysicsID", cfg.front_camber) &&
         add_physics(db, REAR_PHYSICS_N, "RearSpringDamperPhysicsID", cfg.rear_camber) &&
-        add_label(db, SPRING_LABEL_ID, SPRING_TYPE, 3, SPRING_NAME, SPRING_DESCRIPTION) &&
+        add_label(db, SPRING_LABEL_ID, SPRING_TYPE, LEVEL, 3, SPRING_NAME, SPRING_DESCRIPTION) &&
         runf(db,
              "INSERT INTO List_UpgradeSpringDamper(Id,Ordinal,Level,ManufacturerID,MassDiff,DragScale,WindInstabilityScale,Price,IsStock,"
              "SuspensionDamageModDefID,TiresDamageModDefID,FrontSpringDamperPhysicsID,RearSpringDamperPhysicsID) "
@@ -297,7 +345,7 @@ static int add_suspension(const FH2PluginDatabaseFrame *db, int64_t *added) {
 // A front anti-roll bar per car: its Race bar (Level 3, which every car has) with the same physics, so the
 // Tune page's stiffness slider works as with the Race bar. The extra lock is set on the car below.
 static int add_angle_kit(const FH2PluginDatabaseFrame *db, int64_t *added) {
-    return add_label(db, KIT_LABEL_ID, KIT_TYPE, 3, KIT_NAME, KIT_DESCRIPTION) &&
+    return add_label(db, KIT_LABEL_ID, KIT_TYPE, LEVEL, 3, KIT_NAME, KIT_DESCRIPTION) &&
            runf(db,
                 "INSERT INTO List_UpgradeAntiSwayFront(Id,Ordinal,Level,ManufacturerID,MassDiff,Price,IsStock,AntiSwayPhysicsID) "
                 "SELECT Ordinal*1000+%d,Ordinal,%d,ManufacturerID,MassDiff,%d,0,AntiSwayPhysicsID FROM List_UpgradeAntiSwayFront u "
@@ -307,6 +355,160 @@ static int add_angle_kit(const FH2PluginDatabaseFrame *db, int64_t *added) {
                 "AND u.Ordinal*1000+%d NOT IN (SELECT Id FROM List_UpgradeAntiSwayFront)",
                 PART_N, LEVEL, cfg.kit_price, MAX_CAR_ID, PART_N) &&
            count(db, "SELECT changes()", added);
+}
+
+// ---- transmission ---------------------------------------------------------------------------------------
+// A drift gearbox per drivetrain, made from its Race gearbox (or its best below that):
+//   - the overall ratios (gear * final drive) of first and top are the Race box's scaled by FirstGearScale
+//     (0.85: a taller first, usable mid-slide and less eager to spin up) and TopGearScale (1.1: shorter);
+//   - the gears between are evenly spaced (each a fixed step from the next), so every upshift drops the
+//     revs by the same share and none leaves the engine below its power band, as a wide 4-speed does;
+//   - the final drive is the Race box's times TopGearScale, kept inside the Tune page's limits, with the
+//     gears inside theirs, rounded to hundredths like the game's own.
+// Reverse, the shift time (unless ShiftTime is set), weight and inertia are the Race box's. Level 15 is
+// above 1, so the ratios are tunable (game+0x10647d1).
+typedef struct {
+    int64_t row, drivetrain;
+    int forward;
+    double final_drive, ratio[MAX_GEARS + 1];  // [1]..[forward]
+} Gearbox;
+
+static Gearbox gearboxes[MAX_DRIVETRAINS];
+
+static double clamp(double v, double low, double high) { return v < low ? low : v > high ? high : v; }
+static double hundredths(double v) { return floor(v * 100 + 0.5) / 100; }
+
+// The drift ratios for one Race gearbox: 0 if it can't make one (the gears would run out of order).
+static int drift_ratios(const Gearbox *b, int *gears_out, double *final_out, double ratio_out[MAX_GEARS + 1]) {
+    const int gears = cfg.gears ? cfg.gears : (b->forward < MIN_DRIFT_GEARS ? MIN_DRIFT_GEARS : b->forward);
+    const double first = b->ratio[1] * b->final_drive * cfg.first_gear_scale;           // overall
+    const double top = b->ratio[b->forward] * b->final_drive * cfg.top_gear_scale;
+    if (!(first > top * 1.05)) return 0;
+    // The final drive the ini asks for, moved (inside the Tune page's range) as little as needed for first
+    // and top to fit the gear range too.
+    double low = TUNE_FINAL_DRIVE_MIN, high = TUNE_FINAL_DRIVE_MAX;
+    if (first / TUNE_GEAR_MAX > low) low = first / TUNE_GEAR_MAX;
+    if (top / TUNE_GEAR_MIN < high) high = top / TUNE_GEAR_MIN;
+    double final = b->final_drive * cfg.top_gear_scale;
+    final = low <= high ? clamp(final, low, high) : clamp(final, TUNE_FINAL_DRIVE_MIN, TUNE_FINAL_DRIVE_MAX);
+    final = hundredths(final);
+    for (int g = 1; g <= gears; ++g) {
+        double overall = top * pow(first / top, (double)(gears - g) / (gears - 1));
+        ratio_out[g] = hundredths(clamp(overall / final, TUNE_GEAR_MIN, TUNE_GEAR_MAX));
+        if (g > 1 && !(ratio_out[g] < ratio_out[g - 1])) return 0;
+    }
+    *gears_out = gears;
+    *final_out = final;
+    return 1;
+}
+
+static int add_transmissions(const FH2PluginDatabaseFrame *db, int64_t *added) {
+    // Each drivetrain a car has (stock or a swap), with its best gearbox up to Race (Level 3): a non-stock
+    // one before a stock one of the same level. The table has no index on DrivetrainID, and with Gearbox
+    // Upgrades' rows in it these lookups took seconds without one; it goes again once we're done.
+    if (!run(db, "CREATE INDEX FH2_DriftPartsIndex ON List_UpgradeDrivetrainTransmission(DrivetrainID,Level)") ||
+        !runf(db,
+              "CREATE TABLE FH2_DriftPartsSource AS SELECT DISTINCT d.DrivetrainID AS DrivetrainID,(SELECT x.rowid FROM "
+              "List_UpgradeDrivetrainTransmission x WHERE x.DrivetrainID=d.DrivetrainID AND x.Level BETWEEN 0 AND 3 "
+              "AND x.NumGears BETWEEN 3 AND 9 AND x.FinalDriveRatio>0 AND x.GearRatio1>0 ORDER BY x.Level DESC,x.IsStock,x.rowid LIMIT 1) "
+              "AS Source FROM List_UpgradeDrivetrain d WHERE d.Ordinal BETWEEN 1 AND %d AND d.Ordinal IN (SELECT Id FROM Data_Car) "
+              "AND d.DrivetrainID BETWEEN 1 AND %d AND d.DrivetrainID IN (SELECT DrivetrainID FROM Data_Drivetrain) "
+              "AND d.DrivetrainID*1000+%d NOT IN (SELECT Id FROM List_UpgradeDrivetrainTransmission) "
+              "AND NOT EXISTS (SELECT 1 FROM List_UpgradeDrivetrainTransmission t WHERE t.DrivetrainID=d.DrivetrainID AND t.Level=%d)",
+              MAX_CAR_ID, MAX_DRIVETRAIN_ID, PART_N, TRANSMISSION_LEVEL))
+        return 0;
+    static const char sql[] =
+        "SELECT x.rowid,x.DrivetrainID,x.NumGears,CAST(ROUND(x.FinalDriveRatio*1e9) AS INTEGER),CAST(ROUND(x.GearRatio1*1e9) AS INTEGER),"
+        "CAST(ROUND(x.GearRatio2*1e9) AS INTEGER),CAST(ROUND(x.GearRatio3*1e9) AS INTEGER),CAST(ROUND(x.GearRatio4*1e9) AS INTEGER),"
+        "CAST(ROUND(x.GearRatio5*1e9) AS INTEGER),CAST(ROUND(x.GearRatio6*1e9) AS INTEGER),CAST(ROUND(x.GearRatio7*1e9) AS INTEGER),"
+        "CAST(ROUND(x.GearRatio8*1e9) AS INTEGER) FROM FH2_DriftPartsSource s JOIN List_UpgradeDrivetrainTransmission x ON x.rowid=s.Source "
+        "ORDER BY x.DrivetrainID";
+    void *statement = NULL;
+    const char *tail = NULL;
+    if (db->prepare(db->database, sql, -1, &statement, &tail) != 0 || !statement) return 0;
+    unsigned n = 0, skipped = 0;
+    int result;
+    while ((result = db->step(statement)) == SQLITE_ROW && n < MAX_DRIVETRAINS) {
+        Gearbox *b = &gearboxes[n];
+        b->row = db->column_int64(statement, 0);
+        b->drivetrain = db->column_int64(statement, 1);
+        b->forward = (int)db->column_int64(statement, 2) - 1;
+        b->final_drive = (double)db->column_int64(statement, 3) / 1e9;
+        for (int g = 1; g <= MAX_GEARS; ++g) b->ratio[g] = (double)db->column_int64(statement, 3 + g) / 1e9;
+        if (b->ratio[b->forward] > 0 && b->ratio[1] > b->ratio[b->forward]) ++n;
+        else ++skipped;
+    }
+    if (db->finalize(statement) != 0 || (result != SQLITE_DONE && n < MAX_DRIVETRAINS) || !run(db, "DROP TABLE FH2_DriftPartsSource") ||
+        !run(db, "DROP INDEX FH2_DriftPartsIndex"))
+        return 0;
+    if (!add_label(db, TRANSMISSION_LABEL_ID, TRANSMISSION_TYPE, TRANSMISSION_LEVEL, 3, TRANSMISSION_NAME, TRANSMISSION_DESCRIPTION)) return 0;
+    char shift[32] = "GearShiftTime";
+    if (cfg.shift_time > 0) snprintf(shift, sizeof shift, "%.9g", cfg.shift_time);
+    *added = 0;
+    for (unsigned i = 0; i < n; ++i) {
+        const Gearbox *b = &gearboxes[i];
+        int gears = 0;
+        double final = 0, r[MAX_GEARS + 1] = {0};
+        if (!drift_ratios(b, &gears, &final, r)) {
+            ++skipped;
+            continue;
+        }
+        char ratios[MAX_GEARS][24];
+        for (int g = 1; g <= MAX_GEARS; ++g) snprintf(ratios[g - 1], sizeof ratios[0], "%.2f", g <= gears ? r[g] : -1.0);
+        if (!runf(db,
+                  "INSERT INTO List_UpgradeDrivetrainTransmission(Id,DrivetrainID,Level,IsStock,ManufacturerID,MassDiff,Price,MomentInertia,"
+                  "GearShiftTime,FinalDriveRatio,NumGears,GearRatio0,GearRatio1,GearRatio2,GearRatio3,GearRatio4,GearRatio5,GearRatio6,"
+                  "GearRatio7,GearRatio8,CVTShiftTime) "
+                  "SELECT DrivetrainID*1000+%d,DrivetrainID,%d,0,ManufacturerID,MassDiff,%d,MomentInertia,%s,%.2f,%d,GearRatio0,"
+                  "%s,%s,%s,%s,%s,%s,%s,%s,CVTShiftTime FROM List_UpgradeDrivetrainTransmission WHERE rowid=%lld",
+                  PART_N, TRANSMISSION_LEVEL, cfg.transmission_price, shift, final, gears + 1, ratios[0], ratios[1], ratios[2], ratios[3],
+                  ratios[4], ratios[5], ratios[6], ratios[7], (long long)b->row))
+            return 0;
+        ++*added;
+    }
+    if (skipped) logf_line("DRIFT PARTS: %u drivetrains have no gearbox to make a drift one from.\r\n", skipped);
+    return 1;
+}
+
+// ---- differential ---------------------------------------------------------------------------------------
+// A drift diff per drivetrain: its Race diff (or its best below that) with the driven axle locked by Accel
+// and Decel (percent of the Tune page's 2,000 and 1,000 N m): the rear on rear-wheel drive and four-wheel
+// drive, the front on front-wheel drive. Four-wheel drive also gets FrontAccel and FrontDecel at the front
+// and at least RearSplit of the torque at the rear. The rest (clamps, centre lock) is the Race diff's.
+static int add_diffs(const FH2PluginDatabaseFrame *db, int64_t *added) {
+    const double accel = cfg.diff_accel / 100 * TUNE_LSD_ACCEL_MAX, decel = cfg.diff_decel / 100 * TUNE_LSD_DECEL_MAX;
+    const double front_accel = cfg.diff_front_accel / 100 * TUNE_LSD_ACCEL_MAX, front_decel = cfg.diff_front_decel / 100 * TUNE_LSD_DECEL_MAX;
+    return run(db, "CREATE INDEX FH2_DriftPartsIndex ON List_UpgradeDrivetrainDifferential(DrivetrainID,Level)") &&
+           runf(db,
+                "CREATE TABLE FH2_DriftPartsSource AS SELECT x.*,t.DrivetypeID AS DriveType FROM List_UpgradeDrivetrainDifferential x "
+                "JOIN Data_Drivetrain t ON t.DrivetrainID=x.DrivetrainID WHERE x.rowid IN (SELECT (SELECT y.rowid FROM "
+                "List_UpgradeDrivetrainDifferential y WHERE y.DrivetrainID=d.DrivetrainID AND y.Level BETWEEN 0 AND 3 "
+                "ORDER BY y.Level DESC,y.IsStock,y.rowid LIMIT 1) FROM List_UpgradeDrivetrain d WHERE d.Ordinal BETWEEN 1 AND %d "
+                "AND d.Ordinal IN (SELECT Id FROM Data_Car) AND d.DrivetrainID BETWEEN 1 AND %d) "
+                "AND t.DrivetypeID IN (%d,%d,%d) "
+                "AND x.DrivetrainID*1000+%d NOT IN (SELECT Id FROM List_UpgradeDrivetrainDifferential) "
+                "AND NOT EXISTS (SELECT 1 FROM List_UpgradeDrivetrainDifferential z WHERE z.DrivetrainID=x.DrivetrainID AND z.Level=%d)",
+                MAX_CAR_ID, MAX_DRIVETRAIN_ID, DRIVETYPE_FWD, DRIVETYPE_RWD, DRIVETYPE_AWD, PART_N, LEVEL) &&
+           add_label(db, DIFF_LABEL_ID, DIFF_TYPE, LEVEL, 3, DIFF_NAME, DIFF_DESCRIPTION) &&
+           runf(db,
+                "INSERT INTO List_UpgradeDrivetrainDifferential(Id,DrivetrainID,Level,IsStock,ManufacturerID,MassDiff,Price,"
+                "FrontLimitedSlipTorqueAccel,FrontLimitedSlipTorqueDecel,FrontLimitedSlipRelVelClamp,FrontLimitedSlipAccelDefInputTorque,"
+                "RearLimitedSlipTorqueAccel,RearLimitedSlipTorqueDecel,RearLimitedSlipRelVelClamp,RearLimitedSlipAccelDefInputTorque,"
+                "CenterLimitedSlipTorqueAccel,CenterLimitedSlipTorqueDecel,CenterLimitedSlipRelVelClamp,CenterLimitedSlipAccelDefInputTorque,"
+                "RearToqueSplit) "
+                "SELECT DrivetrainID*1000+%d,DrivetrainID,%d,0,ManufacturerID,MassDiff,%d,"
+                "CASE DriveType WHEN %d THEN %.9g WHEN %d THEN %.9g ELSE FrontLimitedSlipTorqueAccel END,"
+                "CASE DriveType WHEN %d THEN %.9g WHEN %d THEN %.9g ELSE FrontLimitedSlipTorqueDecel END,"
+                "FrontLimitedSlipRelVelClamp,FrontLimitedSlipAccelDefInputTorque,"
+                "CASE WHEN DriveType=%d THEN RearLimitedSlipTorqueAccel ELSE %.9g END,"
+                "CASE WHEN DriveType=%d THEN RearLimitedSlipTorqueDecel ELSE %.9g END,"
+                "RearLimitedSlipRelVelClamp,RearLimitedSlipAccelDefInputTorque,"
+                "CenterLimitedSlipTorqueAccel,CenterLimitedSlipTorqueDecel,CenterLimitedSlipRelVelClamp,CenterLimitedSlipAccelDefInputTorque,"
+                "CASE WHEN DriveType=%d AND RearToqueSplit<%.9g THEN %.9g ELSE RearToqueSplit END "
+                "FROM FH2_DriftPartsSource ORDER BY DrivetrainID",
+                PART_N, LEVEL, cfg.diff_price, DRIVETYPE_FWD, accel, DRIVETYPE_AWD, front_accel, DRIVETYPE_FWD, decel, DRIVETYPE_AWD,
+                front_decel, DRIVETYPE_FWD, accel, DRIVETYPE_FWD, decel, DRIVETYPE_AWD, cfg.diff_rear_split, cfg.diff_rear_split) &&
+           count(db, "SELECT changes()", added) && run(db, "DROP TABLE FH2_DriftPartsSource") && run(db, "DROP INDEX FH2_DriftPartsIndex");
 }
 
 // ---- the steering lock, on the driven car -------------------------------------------------------------
@@ -410,29 +612,34 @@ __declspec(dllexport) void WINAPI FH2PluginVehicleUpdate(const FH2PluginVehicleF
 }
 
 __declspec(dllexport) BOOL WINAPI FH2PluginDatabaseUpdate(const FH2PluginDatabaseFrame *db) {
-    int64_t marked = 0, tires = 0, springs = 0, kits = 0;
+    int64_t marked = 0, tires = 0, springs = 0, kits = 0, gearboxes_added = 0, diffs = 0;
     if (!db || db->size < sizeof *db || !db->database || !db->prepare || !db->step || !db->finalize || !db->column_int64) return FALSE;
     if (!count(db, "SELECT COUNT(*) FROM sqlite_master WHERE name='" MARKER "'", &marked)) return FALSE;
-    // A database 0.1.0 already went through (Version 1) has the tires and suspension: it only needs the kit.
+    // The marker's Version says what an earlier build already added to this database: 1 (0.1.0) the tires
+    // and suspension, 2 (0.2) the angle kit too, 3 the transmission and differential too.
     int64_t version = 0;
     if (marked && !count(db, "SELECT MAX(Version) FROM " MARKER, &version)) return FALSE;
-    if (marked && version >= 2) return TRUE;
+    if (marked && version >= 3) return TRUE;
     ULONGLONG started = GetTickCount64();
     if (!run(db, "SAVEPOINT drift_parts")) return FALSE;
     int ok = 1;
-    if (!marked && !(ok = add_tires(db, &tires))) logf_line("DRIFT PARTS: couldn't add the tires.\r\n");
-    if (!marked && ok && !(ok = add_suspension(db, &springs))) logf_line("DRIFT PARTS: couldn't add the suspension.\r\n");
-    if (ok && !(ok = add_angle_kit(db, &kits))) logf_line("DRIFT PARTS: couldn't add the angle kit.\r\n");
+    if (version < 1 && !(ok = add_tires(db, &tires))) logf_line("DRIFT PARTS: couldn't add the tires.\r\n");
+    if (version < 1 && ok && !(ok = add_suspension(db, &springs))) logf_line("DRIFT PARTS: couldn't add the suspension.\r\n");
+    if (version < 2 && ok && !(ok = add_angle_kit(db, &kits))) logf_line("DRIFT PARTS: couldn't add the angle kit.\r\n");
+    if (ok && !(ok = add_transmissions(db, &gearboxes_added))) logf_line("DRIFT PARTS: couldn't add the transmission.\r\n");
+    if (ok && !(ok = add_diffs(db, &diffs))) logf_line("DRIFT PARTS: couldn't add the differential.\r\n");
     if (ok && marked) ok = run(db, "DROP TABLE " MARKER);
-    ok = ok && run(db, "CREATE TABLE " MARKER " AS SELECT 2 AS Version");
+    ok = ok && run(db, "CREATE TABLE " MARKER " AS SELECT 3 AS Version");
     if (!ok || !run(db, "RELEASE drift_parts")) {
         run(db, "ROLLBACK TO drift_parts");
         run(db, "RELEASE drift_parts");
         logf_line("DRIFT PARTS: rolled back; nothing added.\r\n");
         return FALSE;
     }
-    logf_line("DRIFT PARTS: added drift tires for %lld cars, drift suspension for %lld and the angle kit for %lld in %llu ms.\r\n",
-              (long long)tires, (long long)springs, (long long)kits, (unsigned long long)(GetTickCount64() - started));
+    logf_line("DRIFT PARTS: added drift tires for %lld cars, drift suspension for %lld, the angle kit for %lld, and a drift "
+              "transmission for %lld drivetrains and a drift differential for %lld in %llu ms.\r\n",
+              (long long)tires, (long long)springs, (long long)kits, (long long)gearboxes_added, (long long)diffs,
+              (unsigned long long)(GetTickCount64() - started));
     return TRUE;
 }
 
