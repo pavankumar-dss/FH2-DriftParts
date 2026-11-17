@@ -2,7 +2,7 @@
 
 A **Drift tire compound**, **Drift springs and dampers**, a **Drift Angle Kit**, a **Drift Transmission** and a **Drift Differential** for every car in **Forza Horizon 2 on PC (Azimuth)**, bought in the Upgrade Shop like any other part. It's an [Extra Options](https://github.com/RokkuDayo/ForzaHorizon2_ExtraOptions) plugin, it works on modded cars too, and it was made to go with [Drift Zones](https://github.com/Philipp55112/fh2-drift-zones).
 
-**This is an early build (0.3.0).** It works and has been driven, but the feel is one person's first pass. Every number is in an ini file, so you can change it.
+**This is an early build (0.4.0).** It works and has been driven, but the feel is one person's first pass. Every number is in an ini file, so you can change it.
 
 ## What it adds
 
@@ -12,10 +12,10 @@ In the Garage, go to **Upgrades > Custom upgrade**. Each part is last in its lis
 - **Drift Springs and Dampers** (Platform and Handling > Spring and Dampers, 2,500 CR): your car's Race springs and dampers with softer springs available (down to half the Race suspension's softest) and a lower ride height available (15 mm lower). Everything can be tuned afterwards.
 - **Drift Angle Kit** (Platform and Handling > Front Anti-roll Bars, 2,000 CR): your car's Race front anti-roll bar (same stiffness range, tuned the same way) with a drift steering angle kit. It's meant for drift builds: the extra lock doesn't help grip driving. The front wheels turn to 60° on a wheel and 50° on a controller or keys, where stock cars stop at 42° and 29°, and they swing back faster when you countersteer.
 
-- **Drift Transmission** (Drivetrain > Transmission, 2,500 CR): your car's Race gearbox made into a close-ratio one. The gears are evenly spaced, so every upshift drops the revs by the same amount and none leaves the engine below its power band, the way a wide 4-speed does. First gear is 15% taller than the Race gearbox's (usable mid-slide, less eager to spin up) and the final drive 10% shorter (more revs everywhere, a little less top speed). It keeps the Race gearbox's number of gears, but has at least 5. Fully tunable.
+- **Drift Transmission** (Drivetrain > Transmission, 2,500 CR): your car's Race gearbox made into a 4-speed, like the drift gearbox in the newer Forza games. First gear is 15% taller than the Race gearbox's (usable mid-slide, less eager to spin up) and the final drive 10% shorter (more revs everywhere, a little less top speed), so the four gears cover about the same speeds as the Race gearbox. The gears between are evenly spaced: every upshift drops the revs by the same amount, with no big gap between 1st and 2nd. Fully tunable.
 - **Drift Differential** (Drivetrain > Differential, 2,250 CR): your car's Race differential with the driven wheels locked hard: 100% under power and 50% off the throttle, as the Tune page shows them. That's the rear on rear-wheel drive and the front on front-wheel drive. Four-wheel drive also gets a looser front diff (25% / 0%) and at least 80% of the torque sent to the rear. Fully tunable.
 
-On a BMW M3, for example, the Race gearbox is 2.89 / 1.99 / 1.49 / 1.16 / 0.94 / 0.78 with a 4.30 final drive: shifting from 1st to 2nd drops the revs by 31%. The Drift Transmission is 2.23 / 1.81 / 1.47 / 1.19 / 0.96 / 0.78 with a 4.73 final drive: every shift drops them by about 19%.
+On a BMW M3, for example, the Race gearbox is a 6-speed, 2.89 / 1.99 / 1.49 / 1.16 / 0.94 / 0.78 with a 4.30 final drive. The Drift Transmission is 2.23 / 1.57 / 1.11 / 0.78 with a 4.73 final drive: every shift drops the revs by about 30%, as the Race gearbox's 1st to 2nd does. Prefer closer gears and more of them? `Gears=0` in the ini gives 0.3.0's Drift Transmission: the Race gearbox's number of gears (at least 5), about 19% apart on the M3.
 
 With the Drift Angle Kit fitted, **Tuning > Alignment** has a **Steering lock** slider (30° to 80°) under Front Caster. It's kept per car and takes effect straight away; the grey marker is the kit's default.
 
@@ -40,7 +40,7 @@ If you want it different, open `plugins\DriftParts.ini` in the mod's folder and 
 | Slower or faster countersteer with the kit | `CountersteerRate` (stock 105; `0` keeps the car's own) |
 | Closer or wider gears | `[Transmission] FirstGearScale` (lower = a taller first gear, closer gears) |
 | Shorter or taller gearing all round | `TopGearScale` (higher = shorter) |
-| A set number of gears | `Gears=6` (`0` keeps the car's own, at least 5) |
+| More gears, closer together | `[Transmission] Gears=6` (3 to 8; `0` = the car's own number, at least 5) |
 | More or less lock off the throttle | `[Differential] Decel` (or the Tune page, per car) |
 
 These are suggestions, not tested settings. If you find numbers you like, an issue or pull request with them is welcome.
@@ -56,7 +56,7 @@ These are suggestions, not tested settings. If you find numbers you like, an iss
 ## Install
 
 1. Close the game.
-2. Download `DriftParts-0.3.0.zip` from **Releases** and drag the `mods` folder inside it onto your Azimuth folder (the one with `azimuth.exe`). You get:
+2. Download `DriftParts-0.4.0.zip` from **Releases** and drag the `mods` folder inside it onto your Azimuth folder (the one with `azimuth.exe`). You get:
 
    ```
    mods\Forza Horizon 2\Drift Parts\mod.json
@@ -72,7 +72,7 @@ These are suggestions, not tested settings. If you find numbers you like, an iss
 
 `FH2_ExtraOptions.log` beside `azimuth.exe` should then have the lines `DRIFT PARTS: Steering lock row ready for the Tuning screen.` and `DRIFT PARTS: added drift tires for 354 cars, drift suspension for 354, the angle kit for 354, and a drift transmission for 351 drivetrains and a drift differential for 357` (more with modded cars).
 
-Updating from 0.1.0 or 0.2: copy the new files over the old ones (your `DriftParts.locks.ini` stays). If you changed `DriftParts.ini`, copy your values into the new one: it has two new sections. 0.1.0's `[SteeringTest]` is gone; the Drift Angle Kit replaces it.
+Updating from 0.1.0, 0.2 or 0.3: copy the new files over the old ones (your `DriftParts.locks.ini` stays). If you changed `DriftParts.ini`, copy your values into the new one (0.3.0 added the `[Transmission]` and `[Differential]` sections; 0.4.0 changes the default `Gears` to 4). 0.1.0's `[SteeringTest]` is gone; the Drift Angle Kit replaces it. From 0.3.0, a car that already has the Drift Transmission becomes a 4-speed; if you tuned its gearing, use **Setup manager > Reset default tuning settings** (or set the ratios again).
 
 ## Good to know
 
@@ -120,7 +120,7 @@ build\run_on_copy.exe "release\Drift Parts\plugins\DriftParts.dll" copy.slt
 python tests\check.py verify copy.slt
 ```
 
-`prepare` also takes a database file: Extra Options 0.6 keeps the one it merged from every installed mod in `mods\Cache\fh2-db\merged.sqlite`, which checks the mods' cars as well. `verify` expects the default ini. Run on a database an older Drift Parts already went through (0.1.0 or 0.2), it checks that only the parts that build didn't have are added. The Drift Angle Kit's lock and the Tuning row need the game: they were checked in game (the lock with TestKit reading the car's physics: 50° at full lock on keys with the kit, 29° without). The Drift Transmission and Drift Differential were checked in game on a BMW M3: listed by name, fitted, the car built with the part's numbers, and the Tune page showing the gearbox's ratios and, after a reset, the diff's 100% / 50%.
+`prepare` also takes a database file: Extra Options 0.6 keeps the one it merged from every installed mod in `mods\Cache\fh2-db\merged.sqlite`, which checks the mods' cars as well. `verify` expects the default ini. Run on a database an older Drift Parts already went through (0.1.0 or 0.2), it checks that only the parts that build didn't have are added. The Drift Angle Kit's lock and the Tuning row need the game: they were checked in game (the lock with TestKit reading the car's physics: 50° at full lock on keys with the kit, 29° without). The Drift Transmission and Drift Differential were checked in game on a BMW M3 (0.3.0's 6-speed): listed by name, fitted, the car built with the part's numbers, and the Tune page showing the gearbox's ratios and, after a reset, the diff's 100% / 50%.
 
 ## Credits
 

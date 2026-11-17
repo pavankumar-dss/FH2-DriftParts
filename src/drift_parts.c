@@ -13,8 +13,9 @@
 //               per car (Data_Car), not per part, so that part can't come from the database: once a
 //               frame, when the car being driven has the kit fitted, the plugin raises the lock it
 //               was built with (FH2PluginVehicleUpdate, below).
-//   Transmission  Per drivetrain, a copy of its Race gearbox with evenly spaced (close) gears, a taller first
-//               and a shorter final drive, so every upshift lands the engine at the same revs.
+//   Transmission  Per drivetrain, a copy of its Race gearbox made a 4-speed like the newer games' drift
+//               gearbox: a taller first, a shorter final drive and evenly spaced gears, so every upshift
+//               lands the engine at the same revs.
 //   Differential  Per drivetrain, a copy of its Race diff that locks the driven wheels hard under power.
 //
 // Gearboxes and diffs belong to a drivetrain (DrivetrainID), not a car: a car's drivetrain swaps have
@@ -65,7 +66,8 @@ enum {
     // shop finds a part's label by its type and Level, so the drift gearbox takes 15.
     TRANSMISSION_LEVEL = 15,
     MAX_GEARS = 8,                 // NumGears counts reverse and the game caps it at 9 (game+0x10647e6)
-    MIN_DRIFT_GEARS = 5,           // Gears=0 keeps the car's own number of gears, but no fewer than this
+    DRIFT_GEARS = 4,               // the default, like the newer games' drift gearbox
+    MIN_DRIFT_GEARS = 5,           // Gears=0 keeps the car's own number of gears, but no fewer than this (0.3.0's box)
     MAX_DRIVETRAINS = 8192,
     TIRE_LABEL_ID = 0x31000001, SPRING_LABEL_ID = 0x31000002, KIT_LABEL_ID = 0x31000003,
     TRANSMISSION_LABEL_ID = 0x31000004, DIFF_LABEL_ID = 0x31000005,
@@ -104,7 +106,7 @@ typedef struct {
     int spring_price;
     double kit_angle, kit_angle_pad, kit_turn_rate, kit_countersteer_rate;  // 0 rates = the car's own
     int kit_price;
-    int gears;                            // forward gears; 0 = the Race gearbox's, at least MIN_DRIFT_GEARS
+    int gears;                            // forward gears (DRIFT_GEARS); 0 = the Race gearbox's, at least MIN_DRIFT_GEARS
     double first_gear_scale, top_gear_scale;  // overall ratio against the Race gearbox's (lower = taller)
     double shift_time;                    // seconds; 0 = the Race gearbox's
     int transmission_price;
@@ -170,8 +172,8 @@ static void read_settings(void) {
     cfg.kit_turn_rate = ini_number(path, L"AngleKit", L"TurnRate", 0, 0, 1000);
     cfg.kit_countersteer_rate = ini_number(path, L"AngleKit", L"CountersteerRate", 150, 0, 1000);
     cfg.kit_price = (int)ini_number(path, L"AngleKit", L"Price", 2000, 0, 1000000);
-    cfg.gears = (int)ini_number(path, L"Transmission", L"Gears", 0, 0, MAX_GEARS);
-    if (cfg.gears && cfg.gears < 3) cfg.gears = 0;
+    cfg.gears = (int)ini_number(path, L"Transmission", L"Gears", DRIFT_GEARS, 0, MAX_GEARS);
+    if (cfg.gears && cfg.gears < 3) cfg.gears = DRIFT_GEARS;
     cfg.first_gear_scale = ini_number(path, L"Transmission", L"FirstGearScale", 0.85, 0.3, 2);
     cfg.top_gear_scale = ini_number(path, L"Transmission", L"TopGearScale", 1.1, 0.5, 2);
     cfg.shift_time = ini_number(path, L"Transmission", L"ShiftTime", 0, 0, 1);
@@ -361,8 +363,9 @@ static int add_angle_kit(const FH2PluginDatabaseFrame *db, int64_t *added) {
 // A drift gearbox per drivetrain, made from its Race gearbox (or its best below that):
 //   - the overall ratios (gear * final drive) of first and top are the Race box's scaled by FirstGearScale
 //     (0.85: a taller first, usable mid-slide and less eager to spin up) and TopGearScale (1.1: shorter);
-//   - the gears between are evenly spaced (each a fixed step from the next), so every upshift drops the
-//     revs by the same share and none leaves the engine below its power band, as a wide 4-speed does;
+//   - Gears of them (4 by default, as in the newer games; first to top covers the same range as the
+//     Race box, so top speed stays), evenly spaced (each a fixed step from the next), so every upshift
+//     drops the revs by the same share, with no big gap low down as a stock-based 4-speed has;
 //   - the final drive is the Race box's times TopGearScale, kept inside the Tune page's limits, with the
 //     gears inside theirs, rounded to hundredths like the game's own.
 // Reverse, the shift time (unless ShiftTime is set), weight and inertia are the Race box's. Level 15 is

@@ -78,10 +78,10 @@ def verify(copy):
     return 1 if fails else 0
 
 # A Python copy of drift_ratios() in src/drift_parts.c, with the default ini.
-FIRST_SCALE, TOP_SCALE, MIN_GEARS = 0.85, 1.1, 5
+FIRST_SCALE, TOP_SCALE, GEARS = 0.85, 1.1, 4  # Gears=4; Gears=0 would be max(the Race box's, 5)
 def hundredths(v): return math.floor(v * 100 + 0.5) / 100
 def drift_ratios(fd, ratios):
-    gears = max(len(ratios), MIN_GEARS)
+    gears = GEARS
     first, top = ratios[0] * fd * FIRST_SCALE, ratios[-1] * fd * TOP_SCALE
     if not first > top * 1.05: return None
     low, high = max(2.2, first / 6.0), min(6.1, top / 0.48)
@@ -128,10 +128,10 @@ def verify_transmissions(c, one):
         r = [n[f"GearRatio{i}"] for i in range(1, g + 1)]
         steps = [r[i] / r[i + 1] for i in range(g - 1)]
         worst_step = max(worst_step, max(steps) / min(steps))
-        inside = inside and 2.2 <= n["FinalDriveRatio"] <= 6.1 and all(0.48 <= x <= 6 for x in r) and 5 <= g <= 8
+        inside = inside and 2.2 <= n["FinalDriveRatio"] <= 6.1 and all(0.48 <= x <= 6 for x in r) and g == GEARS
         sf, st = s["GearRatio1"] * s["FinalDriveRatio"], s[f"GearRatio{s['NumGears'] - 1}"] * s["FinalDriveRatio"]
         worst_ends = max(worst_ends, abs(r[0] * n["FinalDriveRatio"] / sf / FIRST_SCALE - 1), abs(r[-1] * n["FinalDriveRatio"] / st / TOP_SCALE - 1))
-    expect(inside, "each has 5 to 8 gears and ratios inside the Tune page's limits (gears 0.48 to 6, final drive 2.2 to 6.1)")
+    expect(inside, f"each has {GEARS} gears and ratios inside the Tune page's limits (gears 0.48 to 6, final drive 2.2 to 6.1)")
     expect(worst_step < 1.06, f"evenly spaced: in each one the biggest step is within 6% of the smallest (worst {worst_step:.3f}, from rounding)")
     expect(worst_ends < 0.03, f"overall, first gear 15% taller and top gear 10% shorter than the Race box's (worst {worst_ends:.1%} off)")
     label = c.execute("SELECT TypeId,Level,Name,Description,IconPath FROM Upgrades WHERE id=0x31000004").fetchone()
